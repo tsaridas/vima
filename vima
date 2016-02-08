@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import yaml
+import pyaml
 import gnupg
 from argparse import ArgumentParser
 import tempfile
@@ -7,11 +8,12 @@ import subprocess
 import os
 import sys
 import filecmp
+import copy
 
 # static variables that might need changing
 gpg_home = '/etc/salt/gpgkeys/'
-gpg_recipient = 'nameofrecepient'# to be changed
-gpg_match = 'GnuPG'
+gpg_recipient = 'recipientname'
+gpg_match = 'BEGIN PGP MESSAGE'
 gpg = gnupg.GPG(gnupghome=gpg_home, use_agent=True)
 key_names = ['password', 'key']
 
@@ -20,7 +22,6 @@ filename = sys.argv[1]
 if not os.path.isfile(filename):
     print "Not a valid filename"
     sys.exit()
-
 
 def decrypt(data):
     return gpg.decrypt(data, always_trust=True)
@@ -36,20 +37,36 @@ def status(data):
     else:
         return False
 
-
-def find_and_replace(dic, target, action):
+def get_data_by_path(dic, path):
+    subdic = dic
+    for i in path:
+        if i not in subdic:
+            return None
+        subdic = subdic[i]
+    return subdic
+    
+def find_and_replace(dic, target, action, previous_yaml_data={}, original_yaml_data={}, path=[]):
     for k, v in dic.iteritems():
         if target in k:
             if status(v) and action == 'decrypt':
                 decrypted_data = decrypt(v)
                 dic[k] = str(decrypted_data)
             elif not status(v) and action == 'encrypt':
-                encrypted_data = encrypt(v)
-                dic[k] = str(encrypted_data)
+                newpath = copy.deepcopy(path)
+                newpath.append(k)
+                prev = get_data_by_path(previous_yaml_data, newpath)
+                orig = get_data_by_path(original_yaml_data, newpath)
+                if prev is None or v != prev:
+                    encrypted_data = encrypt(v)
+                    dic[k] = str(encrypted_data)
+                else:
+                    if orig != None:
+                        dic[k] = orig
             continue
         if isinstance(v, dict):
-            find_and_replace(v, target, action)
-
+            newpath = copy.deepcopy(path)
+            newpath.append(k)
+            find_and_replace(v, target, action, previous_yaml_data, original_yaml_data, newpath)
 
 def load_file(filename):
     try:
@@ -65,8 +82,9 @@ def load_file(filename):
 def write_file(filename, data):
     try:
         stream = file(filename, 'w')
-        stream.write('#!yaml|gpg\n')
-        stream.write(yaml.dump(data, default_flow_style=False))
+        #add for saltstack yaml files
+        #stream.write('#!yaml|gpg\n')
+        stream.write(pyaml.dump(data))
         stream.close()
     except:
         print "Could not save file. Unexpected error:", sys.exc_info()[0]
@@ -74,6 +92,7 @@ def write_file(filename, data):
 
 # load file
 yaml_data = load_file(filename)
+original_yaml_data = copy.deepcopy(yaml_data)
 
 # decrypt file
 for keys in key_names:
@@ -81,23 +100,24 @@ for keys in key_names:
 
 # create temp filname and dump data into it
 temp = tempfile.NamedTemporaryFile(delete=False)
-temp.write(yaml.dump(yaml_data, default_flow_style=False))
+temp.write(pyaml.dump(yaml_data))
 temp.close()
 
 # create 
 temp_new = tempfile.NamedTemporaryFile(delete=False)
-temp_new.write(yaml.dump(yaml_data, default_flow_style=False))
+temp_new.write(pyaml.dump(yaml_data))
 temp_new.close()
 
 # call vim
 subprocess.call(['vim', temp.name])
 yaml_data = load_file(temp.name)
 
-
 if not filecmp.cmp(temp.name, temp_new.name):
     # encrypt file
+    
+    previous_yaml_data = load_file(temp_new.name)
     for keys in key_names:
-            find_and_replace(yaml_data, keys, 'encrypt')
+            find_and_replace(yaml_data, keys, 'encrypt', previous_yaml_data, original_yaml_data, [])
     print "File was changed and will be encrypted again."
     # write data
     write_file(filename, yaml_data)
@@ -109,4 +129,3 @@ temp.delete
 os.unlink(temp.name)
 temp_new.delete
 os.unlink(temp_new.name)
-
