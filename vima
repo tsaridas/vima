@@ -2,7 +2,6 @@
 import yaml
 import pyaml
 import gnupg
-from argparse import ArgumentParser
 import tempfile
 import subprocess
 import os
